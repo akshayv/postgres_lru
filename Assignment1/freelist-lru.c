@@ -90,7 +90,70 @@ static void AddBufferToRing(BufferAccessStrategy strategy,
 void
 StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 {
-	elog(ERROR, "StrategyUpdateAccessedBuffer: Not implemented!");
+	if (delete) {
+		// Case C4
+		// Delete the buffer with buf_id from the linked list
+		BufferElement* current = BufferDescriptors-> linkedListHead;
+
+		while(current != NULL) {
+			if (current->buf_id == buf_id) {
+				if (current == BufferDescriptors->linkedListHead) {
+
+					BufferDescriptors->linkedListHead = current->next;
+					current->next->prev = NULL;
+					StrategyFreeBuffer(); // send current object here
+
+				} else if (current == BufferDescriptors->linkedListTail) {
+
+					BufferDescriptors->linkedListTail = current->prev;
+					current->prev->next = NULL;
+					StrategyFreeBuffer(); // send current object here
+
+				} else {
+
+					current->prev->next = current->next;
+					current->next->prev = current->prev;
+					StrategyFreeBuffer(); // send current object here
+
+				}
+
+				break;
+			}
+
+			current = current->next;
+		}
+
+	} else {
+		// Cases C1, C2 and C3
+
+		// Search for accessed page in the buffer pool
+		int flag = 0; // Flag variable to keep track if the page was found
+		BufferElement* current = BufferDescriptors->linkedListHead;
+
+		while (current != NULL) {
+			if (current->buf_id == buf_id) {
+				// Handle case C1 where the page has been found in the buffer pool
+				flag = 1;
+
+				// Shift to the top of the stack
+				current->prev->next = current->next;
+				current->next->prev = current->prev;
+
+				current->prev = NULL;
+				current->next = BufferDescriptors->linkedListHead;
+				BufferDescriptors->linkedListHead->prev = current;
+				BufferDescriptors->linkedListHead = current;
+				return;
+			}
+
+			current = current->next;
+		}
+
+		// Check if the accessed page was not found in the buffer pool(cases C2 & C3)
+		if (flag == 0) {
+			StrategyGetBuffer();
+		}
+	}
 }
 
 /*
