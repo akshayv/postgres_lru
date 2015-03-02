@@ -19,11 +19,13 @@
 #include "storage/bufmgr.h"
 
 
-typedef struct {
+struct BufferElement {
 	struct BufferElement* next;
 	struct BufferElement* prev;
 	int buf_id;
-} BufferElement;
+} ;
+
+typedef struct BufferElement BufferElement;
 
 /*
  * The shared freelist control information.
@@ -178,6 +180,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 {
 	volatile BufferDesc *buf;
 	Latch	   *bgwriterLatch;
+	int			trycounter;
 
 	/*
 	 * If given a strategy object, see whether it can select a buffer. We
@@ -328,7 +331,7 @@ StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
 	int			result;
 
 	LWLockAcquire(BufFreelistLock, LW_EXCLUSIVE);
-	result = StrategyControl->nextVictimBuffer;
+	result = StrategyControl->lruBuffer;
 	if (complete_passes)
 		*complete_passes = StrategyControl->completePasses;
 	if (num_buf_alloc)
@@ -493,8 +496,7 @@ GetAccessStrategy(BufferAccessStrategyType btype)
 
 	/* Allocate the object and initialize all elements to zeroes */
 	strategy = (BufferAccessStrategy)
-		palloc0(offsetof(BufferAccessStrategyData, buffers) +
-				list_size * sizeof(Buffer));
+		palloc0(list_size * sizeof(Buffer));
 
 	/* Set fields that don't start out zero */
 	strategy->btype = btype;
@@ -556,8 +558,8 @@ GetBufferFromRing(BufferAccessStrategy strategy)
 static void
 AddBufferToRing(BufferAccessStrategy strategy, volatile BufferDesc *buf)
 {
-	struct BufferElement b = {NULL, NULL, -1};
-	b.buf_id = BufferDescriptorGetBuffer(buf);
+	BufferElement* b = malloc (sizeof (BufferElement));
+	b->buf_id = BufferDescriptorGetBuffer(buf);
 
 	strategy->linkedListTail->prev = b;
 	b->next = strategy->linkedListTail;
@@ -578,11 +580,12 @@ AddBufferToRing(BufferAccessStrategy strategy, volatile BufferDesc *buf)
 bool
 StrategyRejectBuffer(BufferAccessStrategy strategy, volatile BufferDesc *buf)
 {
+	BufferElement* current;
 	/* We only do this in bulkread mode */
 	if (strategy->btype != BAS_BULKREAD)
 		return false;
 
-	BufferElement* current = strategy->linkedListHead;
+	current = strategy->linkedListHead;
 	while(current != NULL)
 	{
 		buf = &BufferDescriptors[current->buf_id];
