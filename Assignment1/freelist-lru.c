@@ -103,13 +103,13 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 			if (current->buf_id == buf_id) {
 				if (current == StrategyControl->linkedListHead) {
 
-					StrategyControl->linkedListHead = current->next;
-					current->next->prev = NULL;
+					StrategyControl->linkedListHead = current->prev;
+					current->prev->next = NULL;
 
 				} else if (current == StrategyControl->linkedListTail) {
 
-					StrategyControl->linkedListTail = current->prev;
-					current->prev->next = NULL;
+					StrategyControl->linkedListTail = current->next;
+					current->next->prev = NULL;
 
 				} else {
 
@@ -118,10 +118,10 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 
 				}
 
-				break;
+				return;
 			}
 
-			current = current->next;
+			current = current->prev;
 		}
 
 	} else {
@@ -129,19 +129,20 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 
 		// Search for accessed page in the stack
 
-		BufferDesc* buf = &BufferDescriptors[buf_id];
-		BufferElement* current = StrategyControl->linkedListHead;
+		BufferElement* current = StrategyControl->linkedListTail;
 
 		while (current != NULL) {
 			if (current->buf_id == buf_id) {
 				// Shift to the top of the stack
-				current->prev->next = current->next;
-				current->next->prev = current->prev;
-
-				current->prev = NULL;
-				current->next = StrategyControl->linkedListHead;
-				StrategyControl->linkedListHead->prev = current;
-				StrategyControl->linkedListHead = current;
+				if (current != StrategyControl->linkedListHead) {
+					if (current->prev != NULL) {
+						current->prev->next = current->next;
+					} 
+					current->next = NULL;
+					current->prev = StrategyControl->linkedListHead;
+					StrategyControl->linkedListHead->next = current;
+					StrategyControl->linkedListHead = current;
+				}
 				return;
 			}
 			current = current->next;
@@ -151,13 +152,17 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 		// If buffer was not found on the stack, add it to the head
 		// Check if the accessed page was not found in the buffer pool(cases C2 & C3)
 		BufferElement* b = malloc (sizeof (BufferElement));
-		b->buf_id = BufferDescriptorGetBuffer(buf);
+		b->buf_id = buf_id;
 
-		b->prev = NULL;
-		b->next = StrategyControl->linkedListHead;
-		StrategyControl->linkedListHead->prev = b;
-		StrategyControl->linkedListHead = b;
-
+		b->prev = StrategyControl->linkedListHead;
+		b->next = NULL;
+		if (StrategyControl->linkedListHead == NULL) {
+			StrategyControl->linkedListHead = b;
+			StrategyControl->linkedListTail = b;
+		} else {
+			StrategyControl->linkedListHead->next = b;
+			StrategyControl->linkedListHead = b;
+		}
 	}
 }
 
@@ -232,8 +237,10 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 	 * individual buffer spinlocks, so it's OK to manipulate them without
 	 * holding the spinlock.
 	 */
+
 	while (StrategyControl->firstFreeBuffer >= 0)
 	{
+
 		buf = &BufferDescriptors[StrategyControl->firstFreeBuffer];
 		Assert(buf->freeNext != FREENEXT_NOT_IN_LIST);
 
@@ -249,7 +256,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 		 * we'd better check anyway.)
 		 */
 		LockBufHdr(buf);
-		if (buf->refcount == 0)
+		if (buf->refcount == 0 && buf->usage_count == 0)
 		{
 			if (strategy != NULL)
 				AddBufferToRing(strategy, buf);
@@ -260,7 +267,6 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 	}
 
 	/* Nothing on the freelist, so run the "clock sweep" algorithm */
-	trycounter = NBuffers;
 	BufferElement* cur = StrategyControl->linkedListTail;
 	for (;;)
 	{
@@ -279,7 +285,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 			StrategyUpdateAccessedBuffer(buf->buf_id, false);
 			return buf;
 		}
-		else if (--trycounter == 0)
+		else if (StrategyControl->linkedListHead->buf_id == cur->buf_id)
 		{
 			/*
 			 * We've scanned all the buffers without making any state changes,
@@ -314,7 +320,7 @@ StrategyFreeBuffer(volatile BufferDesc *buf)
 		if (buf->freeNext < 0)
 			StrategyControl->lastFreeBuffer = buf->buf_id;
 		StrategyControl->firstFreeBuffer = buf->buf_id;
-		StrategyUpdateAccessedBuffer(buf->buf_id, false);
+		StrategyUpdateAccessedBuffer(buf->buf_id, true);
 	}
 
 	LWLockRelease(BufFreelistLock);
@@ -449,6 +455,10 @@ StrategyInitialize(bool init)
 
 		/* No pending notification */
 		StrategyControl->bgwriterLatch = NULL;
+
+		StrategyControl->linkedListTail = NULL;
+		StrategyControl->linkedListHead = NULL;
+
 	}
 	else
 		Assert(!init);
