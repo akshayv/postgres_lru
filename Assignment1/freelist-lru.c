@@ -50,6 +50,10 @@ typedef struct
 	uint32		completePasses; /* Dummy variable to prevent stuff from breaking*/
 	uint32		numBufferAllocs;	/* Buffers allocated since last reset */
 
+
+	BufferElement* linkedListHead;
+	BufferElement* linkedListTail;
+
 	/*
 	 * Notification latch, or NULL if none.  See StrategyNotifyBgWriter.
 	 */
@@ -74,8 +78,6 @@ typedef struct BufferAccessStrategyData
 	/*
 	 * LinkedList of buffer numbers.
 	 */
-	BufferElement* linkedListHead;
-	BufferElement* linkedListTail;
 }	BufferAccessStrategyData;
 
 
@@ -95,27 +97,24 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 	if (delete) {
 		// Case C4
 		// Delete the buffer with buf_id from the linked list
-		BufferElement* current = BufferDescriptors-> linkedListHead;
+		BufferElement* current = StrategyControl-> linkedListHead;
 
 		while(current != NULL) {
 			if (current->buf_id == buf_id) {
-				if (current == BufferDescriptors->linkedListHead) {
+				if (current == StrategyControl->linkedListHead) {
 
-					BufferDescriptors->linkedListHead = current->next;
+					StrategyControl->linkedListHead = current->next;
 					current->next->prev = NULL;
-					StrategyFreeBuffer(); // send current object here
 
-				} else if (current == BufferDescriptors->linkedListTail) {
+				} else if (current == StrategyControl->linkedListTail) {
 
-					BufferDescriptors->linkedListTail = current->prev;
+					StrategyControl->linkedListTail = current->prev;
 					current->prev->next = NULL;
-					StrategyFreeBuffer(); // send current object here
 
 				} else {
 
 					current->prev->next = current->next;
 					current->next->prev = current->prev;
-					StrategyFreeBuffer(); // send current object here
 
 				}
 
@@ -128,33 +127,37 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 	} else {
 		// Cases C1, C2 and C3
 
-		// Search for accessed page in the buffer pool
-		int flag = 0; // Flag variable to keep track if the page was found
-		BufferElement* current = BufferDescriptors->linkedListHead;
+		// Search for accessed page in the stack
+
+		BufferDesc* buf = &BufferDescriptors[buf_id];
+		BufferElement* current = StrategyControl->linkedListHead;
 
 		while (current != NULL) {
 			if (current->buf_id == buf_id) {
-				// Handle case C1 where the page has been found in the buffer pool
-				flag = 1;
-
 				// Shift to the top of the stack
 				current->prev->next = current->next;
 				current->next->prev = current->prev;
 
 				current->prev = NULL;
-				current->next = BufferDescriptors->linkedListHead;
-				BufferDescriptors->linkedListHead->prev = current;
-				BufferDescriptors->linkedListHead = current;
+				current->next = StrategyControl->linkedListHead;
+				StrategyControl->linkedListHead->prev = current;
+				StrategyControl->linkedListHead = current;
 				return;
 			}
-
 			current = current->next;
 		}
 
+		// Handle case C1 where the page has been found in the buffer pool
+		// If buffer was not found on the stack, add it to the head
 		// Check if the accessed page was not found in the buffer pool(cases C2 & C3)
-		if (flag == 0) {
-			StrategyGetBuffer();
-		}
+		BufferElement* b = malloc (sizeof (BufferElement));
+		b->buf_id = BufferDescriptorGetBuffer(buf);
+
+		b->prev = NULL;
+		b->next = StrategyControl->linkedListHead;
+		StrategyControl->linkedListHead->prev = b;
+		StrategyControl->linkedListHead = b;
+
 	}
 }
 
@@ -258,9 +261,10 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 
 	/* Nothing on the freelist, so run the "clock sweep" algorithm */
 	trycounter = NBuffers;
+	BufferElement* cur = StrategyControl->linkedListTail;
 	for (;;)
 	{
-		buf = &BufferDescriptors[StrategyControl->lruBuffer];
+		buf = &BufferDescriptors[cur->buf_id];
 
 		/*
 		 * If the buffer is pinned or has a nonzero usage_count, we cannot use
@@ -287,6 +291,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 			UnlockBufHdr(buf);
 			elog(ERROR, "no unpinned buffers available");
 		}
+		cur = cur->next;
 		UnlockBufHdr(buf);
 	}
 }
@@ -309,6 +314,7 @@ StrategyFreeBuffer(volatile BufferDesc *buf)
 		if (buf->freeNext < 0)
 			StrategyControl->lastFreeBuffer = buf->buf_id;
 		StrategyControl->firstFreeBuffer = buf->buf_id;
+		StrategyUpdateAccessedBuffer(buf->buf_id, false);
 	}
 
 	LWLockRelease(BufFreelistLock);
@@ -383,6 +389,9 @@ StrategyShmemSize(void)
 
 	/* size of the shared replacement strategy control block */
 	size = add_size(size, MAXALIGN(sizeof(BufferStrategyControl)));
+
+	/* size of the shared replacement strategy control block */
+	size = add_size(size, mul_size(NBuffers, sizeof(BufferElement)));
 
 	return size;
 }
@@ -530,7 +539,7 @@ GetBufferFromRing(BufferAccessStrategy strategy)
 {
 	volatile BufferDesc *buf;
 
-	BufferElement* current = strategy->linkedListTail;
+	BufferElement* current = StrategyControl->linkedListTail;
 	while(current != NULL)
 	{
 		buf = &BufferDescriptors[current->buf_id];
@@ -561,9 +570,9 @@ AddBufferToRing(BufferAccessStrategy strategy, volatile BufferDesc *buf)
 	BufferElement* b = malloc (sizeof (BufferElement));
 	b->buf_id = BufferDescriptorGetBuffer(buf);
 
-	strategy->linkedListTail->prev = b;
-	b->next = strategy->linkedListTail;
-	strategy->linkedListTail = b; 
+	StrategyControl->linkedListTail->prev = b;
+	b->next = StrategyControl->linkedListTail;
+	StrategyControl->linkedListTail = b; 
 }
 
 /*
@@ -585,16 +594,16 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, volatile BufferDesc *buf)
 	if (strategy->btype != BAS_BULKREAD)
 		return false;
 
-	current = strategy->linkedListHead;
+	current = StrategyControl->linkedListHead;
 	while(current != NULL)
 	{
 		buf = &BufferDescriptors[current->buf_id];
 		if (current->buf_id == buf->buf_id) {
-			if(current == strategy->linkedListHead) {
-				strategy->linkedListHead = strategy->linkedListHead->prev;
+			if(current == StrategyControl->linkedListHead) {
+				StrategyControl->linkedListHead = StrategyControl->linkedListHead->prev;
 			} 
-			if(current == strategy->linkedListTail) {
-				strategy->linkedListTail = strategy->linkedListTail->next;
+			if(current == StrategyControl->linkedListTail) {
+				StrategyControl->linkedListTail = StrategyControl->linkedListTail->next;
 			}
 			if(current->prev != NULL)
 				current->prev->next = current->next;
