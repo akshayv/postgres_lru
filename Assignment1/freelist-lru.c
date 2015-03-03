@@ -214,6 +214,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 {
 	volatile BufferDesc *buf;
 	Latch	   *bgwriterLatch;
+	int			trycounter;
 
 	/*
 	 * If given a strategy object, see whether it can select a buffer. We
@@ -309,7 +310,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 			StrategyUpdateAccessedBuffer(StrategyControl->lruStack[cur].buf_id, false);
 			return buf;
 		}
-		else if (StrategyControl->lruStack[StrategyControl->linkedListHead].buf_id == StrategyControl->lruStack[cur].buf_id)
+		else if (--trycounter == 0)
 		{
 			/*
 			 * We've scanned all the buffers without making any state changes,
@@ -487,11 +488,24 @@ StrategyInitialize(bool init)
 		StrategyControl->linkedListTail = -1;
 		StrategyControl->linkedListHead = -1;
 
+
+		StrategyControl->lruStack = (BufferElement *) ShmemInitStruct("Stack allocation", NBuffers * sizeof(BufferElement), &lru_init);
+		if(!lru_init)
+		{
+			BufferElement *buffer_pointer = StrategyControl->lruStack;
+			for(iterator = 0; iterator < NBuffers; iterator++)
+			{
+				buffer_pointer->next = -1;
+				buffer_pointer->prev = -1;
+				buffer_pointer->buf_id = iterator;
+				buffer_pointer++;
+			}	
+		}
 	}
 	else
 		Assert(!init);
 
-	StrategyControl->lruStack = (BufferElement *) ShmemInitStruct("Stack allocation", NBuffers * sizeof(BufferElement), &lru_init);
+
 }
 
 
