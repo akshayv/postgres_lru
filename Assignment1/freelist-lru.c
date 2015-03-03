@@ -180,7 +180,10 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 		// Handle case C1 where the page has been found in the buffer pool
 		// If buffer was not found on the stack, add it to the head
 		// Check if the accessed page was not found in the buffer pool(cases C2 & C3)
-		StrategyControl->lruStack[buf_id].prev = StrategyControl->linkedListHead;
+		BufferElement b = {-1, -1, buf_id};
+		b.buf_id = buf_id;
+
+		b.prev = StrategyControl->linkedListHead;
 		if (StrategyControl->linkedListHead != -1) {
 			StrategyControl->lruStack[StrategyControl->linkedListHead].next = buf_id;
 		} 
@@ -189,6 +192,7 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 		if (StrategyControl->linkedListTail == -1) {
 			StrategyControl->linkedListTail = buf_id;
 		}
+		StrategyControl->lruStack[buf_id] = b;
 	}
 }
 
@@ -214,7 +218,6 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 {
 	volatile BufferDesc *buf;
 	Latch	   *bgwriterLatch;
-	int			trycounter;
 
 	/*
 	 * If given a strategy object, see whether it can select a buffer. We
@@ -310,7 +313,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 			StrategyUpdateAccessedBuffer(StrategyControl->lruStack[cur].buf_id, false);
 			return buf;
 		}
-		else if (--trycounter == 0)
+		else if (StrategyControl->lruStack[StrategyControl->linkedListHead].buf_id == StrategyControl->lruStack[cur].buf_id)
 		{
 			/*
 			 * We've scanned all the buffers without making any state changes,
@@ -439,8 +442,8 @@ void
 StrategyInitialize(bool init)
 {
 	bool		found;
-	bool		lru_init;
-	int 		iterator;
+	bool		init_lru;
+	int iterator;
 
 	/*
 	 * Initialize the shared buffer lookup hashtable.
@@ -488,24 +491,27 @@ StrategyInitialize(bool init)
 		StrategyControl->linkedListTail = -1;
 		StrategyControl->linkedListHead = -1;
 
-
-		StrategyControl->lruStack = (BufferElement *) ShmemInitStruct("Stack allocation", NBuffers * sizeof(BufferElement), &lru_init);
-		if(!lru_init)
-		{
-			BufferElement *buffer_pointer = StrategyControl->lruStack;
-			for(iterator = 0; iterator < NBuffers; iterator++)
-			{
-				buffer_pointer->next = -1;
-				buffer_pointer->prev = -1;
-				buffer_pointer->buf_id = iterator;
-				buffer_pointer++;
-			}	
-		}
 	}
 	else
 		Assert(!init);
 
+	StrategyControl->lruStack = (BufferElement *) ShmemInitStruct("Initialize LRU", NBuffers * sizeof(BufferElement), &init_lru);
+	if(!stack_found)
+	{
+		Assert(init);
 
+		BufferElement *buffer_element;
+		buffer_element = StrategyControl->lruStack;
+		for(iterator= 0; iterator < NBuffers; iterator++)
+		{
+			b->next = -1;
+			b->prev = -1;
+			b->buf_id = iterator;
+			buffer_element++;
+		}
+	}
+	else
+		Assert(!init);
 }
 
 
