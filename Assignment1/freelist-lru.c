@@ -115,7 +115,7 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 		// Case C4
 		// Delete the buffer with buf_id from the linked list
 		bool isHeadOrTail = false;
-		int current = StrategyControl-> linkedListHead;
+		int current = StrategyControl->linkedListTail;
 		while(current != -1) {
 			if (StrategyControl->lruStack[current].buf_id == buf_id) {
 				isHeadOrTail = false;
@@ -133,17 +133,19 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 						StrategyControl->lruStack[StrategyControl->linkedListTail].prev = -1;
 					}
 				}
-				 if(isHeadOrTail != true) {
+				 if(!isHeadOrTail) {
 
 					StrategyControl->lruStack[StrategyControl->lruStack[current].prev].next = StrategyControl->lruStack[current].next;
 					StrategyControl->lruStack[StrategyControl->lruStack[current].next].prev = StrategyControl->lruStack[current].prev;
 
 				}
+				StrategyControl->lruStack[current].prev = -1;
+				StrategyControl->lruStack[current].next = -1;
 
 				return;
 			}
 
-			current = StrategyControl->lruStack[current].prev;
+			current = StrategyControl->lruStack[current].next;
 		}
 
 	} else {
@@ -154,14 +156,13 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 
 		while (current != -1) {
 			if (StrategyControl->lruStack[current].buf_id == buf_id) {
-				// Shift to the top of the stack
-				if(current == StrategyControl->linkedListTail 
-					&& current != StrategyControl -> linkedListHead) {
-					StrategyControl->linkedListTail = StrategyControl->lruStack[current].next;
-
-				}
 
 				if (current != StrategyControl->linkedListHead) {
+					// Shift to the top of the stack
+					if(current == StrategyControl->linkedListTail) { 
+						StrategyControl->linkedListTail = StrategyControl->lruStack[current].next;
+					}
+
 					if (StrategyControl->lruStack[current].prev != -1) {
 						StrategyControl->lruStack[StrategyControl->lruStack[current].prev].next = StrategyControl->lruStack[current].next;
 					} 
@@ -180,10 +181,7 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 		// Handle case C1 where the page has been found in the buffer pool
 		// If buffer was not found on the stack, add it to the head
 		// Check if the accessed page was not found in the buffer pool(cases C2 & C3)
-		BufferElement b = {-1, -1, buf_id};
-		b.buf_id = buf_id;
-
-		b.prev = StrategyControl->linkedListHead;
+		StrategyControl->lruStack[buf_id].prev = StrategyControl->linkedListHead;
 		if (StrategyControl->linkedListHead != -1) {
 			StrategyControl->lruStack[StrategyControl->linkedListHead].next = buf_id;
 		} 
@@ -192,7 +190,6 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 		if (StrategyControl->linkedListTail == -1) {
 			StrategyControl->linkedListTail = buf_id;
 		}
-		StrategyControl->lruStack[buf_id] = b;
 	}
 }
 
@@ -218,6 +215,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 {
 	volatile BufferDesc *buf;
 	Latch	   *bgwriterLatch;
+	int 	 tryCounter;
 
 	/*
 	 * If given a strategy object, see whether it can select a buffer. We
@@ -297,6 +295,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 
 	/* Nothing on the freelist, so run the "clock sweep" algorithm */
 	int cur = StrategyControl->linkedListTail;
+	tryCounter = NBuffers;
 	for (;;)
 	{
 		buf = &BufferDescriptors[cur];
@@ -313,7 +312,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, bool *lock_held)
 			StrategyUpdateAccessedBuffer(StrategyControl->lruStack[cur].buf_id, false);
 			return buf;
 		}
-		else if (StrategyControl->lruStack[StrategyControl->linkedListHead].buf_id == StrategyControl->lruStack[cur].buf_id)
+		else if (--tryCounter == 0)
 		{
 			/*
 			 * We've scanned all the buffers without making any state changes,
@@ -462,7 +461,7 @@ StrategyInitialize(bool init)
 	 */
 	StrategyControl = (BufferStrategyControl *)
 		ShmemInitStruct("Buffer Strategy Status",
-						sizeof(BufferStrategyControl) + NBuffers * sizeof(BufferElement),
+						sizeof(BufferStrategyControl),
 						&found);
 
 	if (!found)
@@ -496,18 +495,15 @@ StrategyInitialize(bool init)
 		Assert(!init);
 
 	StrategyControl->lruStack = (BufferElement *) ShmemInitStruct("Initialize LRU", NBuffers * sizeof(BufferElement), &init_lru);
-	if(!stack_found)
+	if(!init_lru)
 	{
 		Assert(init);
-
-		BufferElement *buffer_element;
-		buffer_element = StrategyControl->lruStack;
-		for(iterator= 0; iterator < NBuffers; iterator++)
+		for(iterator = 0; iterator < NBuffers; iterator++)
 		{
-			b->next = -1;
-			b->prev = -1;
-			b->buf_id = iterator;
-			buffer_element++;
+
+			BufferElement b = {-1, -1, iterator};
+			b.buf_id = iterator;
+			StrategyControl->lruStack[iterator] = b;
 		}
 	}
 	else
