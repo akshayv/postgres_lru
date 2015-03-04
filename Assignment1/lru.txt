@@ -4,12 +4,12 @@ query mode: simple
 number of clients: 10
 number of threads: 1
 duration: 180 s
-number of transactions actually processed: 7377
-latency average: 244.002 ms
-tps = 40.557362 (including connections establishing)
-tps = 40.583421 (excluding connections establishing)
+number of transactions actually processed: 8356
+latency average: 215.414 ms
+tps = 46.364989 (including connections establishing)
+tps = 46.401287 (excluding connections establishing)
  heap_read | heap_hit |         ratio          
 -----------+----------+------------------------
-     17207 |    73088 | 0.80943573841297967772
+     19252 |    90208 | 0.82411839941531152933
 (1 row)
 

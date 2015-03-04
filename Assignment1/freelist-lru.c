@@ -115,7 +115,7 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 		// Case C4
 		// Delete the buffer with buf_id from the linked list
 		bool isHeadOrTail = false;
-		int current = StrategyControl->linkedListTail;
+		int current = StrategyControl->linkedListHead;
 		while(current != -1) {
 			if (StrategyControl->lruStack[current].buf_id == buf_id) {
 				isHeadOrTail = false;
@@ -145,14 +145,14 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 				return;
 			}
 
-			current = StrategyControl->lruStack[current].next;
+			current = StrategyControl->lruStack[current].prev;
 		}
 
 	} else {
 		// Cases C1, C2 and C3
 
 		// Search for accessed page in the stack
-		int current = StrategyControl->linkedListTail;
+		int current = StrategyControl->linkedListHead;
 
 		while (current != -1) {
 			if (StrategyControl->lruStack[current].buf_id == buf_id) {
@@ -175,12 +175,11 @@ StrategyUpdateAccessedBuffer(int buf_id, bool delete)
 				}
 				return;
 			}
-			current = StrategyControl->lruStack[current].next;
+			current = StrategyControl->lruStack[current].prev;
 		}
 
 		// Handle case C1 where the page has been found in the buffer pool
 		// If buffer was not found on the stack, add it to the head
-		// Check if the accessed page was not found in the buffer pool(cases C2 & C3)
 		StrategyControl->lruStack[buf_id].prev = StrategyControl->linkedListHead;
 		if (StrategyControl->linkedListHead != -1) {
 			StrategyControl->lruStack[StrategyControl->linkedListHead].next = buf_id;
